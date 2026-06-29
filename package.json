@@ -1,9 +1,9 @@
 {
-  "name": "demo-repo",
-  "version": "0.2.0",
-  "description": "A sample package.json",
-  "dependencies": {
-    "@primer/css": "17.0.1"
-  },
-  "license": "MIT"
+  "name": "forcecage-gateway",
+  "version": "0.1.0",
+  "description": "ForceCage Gateway — inline financial proxy and policy firewall for AI agents",
+  "license": "BUSL-1.1",
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "^2.1.195"
+  }
 }
