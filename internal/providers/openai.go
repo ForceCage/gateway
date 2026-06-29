@@ -8,21 +8,21 @@ import (
 // OpenAI pricing in USD per 1M tokens (input / output).
 // Update this map as OpenAI changes pricing.
 var openAIPricing = map[string][2]float64{
-	"gpt-4o":             {2.50, 10.00},
-	"gpt-4o-mini":        {0.15, 0.60},
-	"gpt-4-turbo":        {10.00, 30.00},
-	"gpt-4":              {30.00, 60.00},
-	"gpt-3.5-turbo":      {0.50, 1.50},
-	"o1":                 {15.00, 60.00},
-	"o1-mini":            {3.00, 12.00},
-	"o1-pro":             {150.00, 600.00},
-	"o3-mini":            {1.10, 4.40},
-	"_default":           {10.00, 30.00}, // conservative fallback
+	"gpt-4o":        {2.50, 10.00},
+	"gpt-4o-mini":   {0.15, 0.60},
+	"gpt-4-turbo":   {10.00, 30.00},
+	"gpt-4":         {30.00, 60.00},
+	"gpt-3.5-turbo": {0.50, 1.50},
+	"o1":            {15.00, 60.00},
+	"o1-mini":       {3.00, 12.00},
+	"o1-pro":        {150.00, 600.00},
+	"o3-mini":       {1.10, 4.40},
+	"_default":      {10.00, 30.00}, // conservative fallback
 }
 
 type OpenAI struct{}
 
-func (o *OpenAI) Name() string        { return "openai" }
+func (o *OpenAI) Name() string         { return "openai" }
 func (o *OpenAI) UpstreamBase() string { return "https://api.openai.com" }
 
 func (o *OpenAI) EstimateCost(r *http.Request, body []byte) (float64, error) {

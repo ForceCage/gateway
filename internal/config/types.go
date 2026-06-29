@@ -8,6 +8,7 @@ type Action string
 const (
 	ActionBlock    Action = "BLOCK"
 	ActionThrottle Action = "THROTTLE"
+	ActionAllow    Action = "ALLOW"
 )
 
 // Policy is a single spending or rate limit rule.

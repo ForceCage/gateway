@@ -7,19 +7,19 @@ import (
 
 // Anthropic pricing in USD per 1M tokens (input / output).
 var anthropicPricing = map[string][2]float64{
-	"claude-opus-4-8":              {15.00, 75.00},
-	"claude-sonnet-4-6":            {3.00, 15.00},
-	"claude-haiku-4-5-20251001":    {0.80, 4.00},
-	"claude-3-5-sonnet-20241022":   {3.00, 15.00},
-	"claude-3-5-haiku-20241022":    {0.80, 4.00},
-	"claude-3-opus-20240229":       {15.00, 75.00},
-	"claude-3-haiku-20240307":      {0.25, 1.25},
-	"_default":                     {15.00, 75.00},
+	"claude-opus-4-8":            {15.00, 75.00},
+	"claude-sonnet-4-6":          {3.00, 15.00},
+	"claude-haiku-4-5-20251001":  {0.80, 4.00},
+	"claude-3-5-sonnet-20241022": {3.00, 15.00},
+	"claude-3-5-haiku-20241022":  {0.80, 4.00},
+	"claude-3-opus-20240229":     {15.00, 75.00},
+	"claude-3-haiku-20240307":    {0.25, 1.25},
+	"_default":                   {15.00, 75.00},
 }
 
 type Anthropic struct{}
 
-func (a *Anthropic) Name() string        { return "anthropic" }
+func (a *Anthropic) Name() string         { return "anthropic" }
 func (a *Anthropic) UpstreamBase() string { return "https://api.anthropic.com" }
 
 func (a *Anthropic) EstimateCost(r *http.Request, body []byte) (float64, error) {

@@ -81,13 +81,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Default ALLOW: forward without enforcement.
-		h.forward(provider, w, r, bodyBytes, agentID, nil, 0)
+		h.forward(provider, w, r, bodyBytes, agentID, nil)
 		return
 	}
 
-	if len(policies) == 0 {
-		// Agent is known but has no policy for this provider — allow by default.
-		h.forward(provider, w, r, bodyBytes, agentID, nil, 0)
+	applicable := matchingPolicies(policies, modelFromBody(bodyBytes))
+	if len(applicable) == 0 {
+		// Agent is known but no policy applies to this provider/model — allow.
+		h.forward(provider, w, r, bodyBytes, agentID, nil)
 		return
 	}
 
@@ -98,8 +99,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		estimatedCost = 0.10
 	}
 
-	for _, p := range h.matchingPolicies(policies, r) {
-		allowed, currentSpend, err := h.tracker.CheckAndReserve(
+	// Reserve against every applicable policy. If any policy blocks, roll back the
+	// reservations already made for this request so they don't leak as phantom spend.
+	reservations := make([]budget.Reservation, 0, len(applicable))
+	for _, p := range applicable {
+		allowed, res, currentSpend, err := h.tracker.CheckAndReserve(
 			r.Context(), agentID, providerName, p.Limit, estimatedCost, p.WindowDuration,
 		)
 		if err != nil {
@@ -108,6 +112,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !allowed {
+			h.releaseAll(r.Context(), reservations)
 			h.logger.Info("budget exceeded, blocking request",
 				"agent", agentID, "provider", providerName,
 				"spend", currentSpend, "limit", p.Limit, "window", p.Window,
@@ -123,9 +128,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		reservations = append(reservations, res)
 	}
 
-	h.forward(provider, w, r, bodyBytes, agentID, policies, estimatedCost)
+	h.forward(provider, w, r, bodyBytes, agentID, reservations)
+}
+
+func (h *Handler) releaseAll(ctx context.Context, reservations []budget.Reservation) {
+	for _, res := range reservations {
+		if err := h.tracker.Release(ctx, res); err != nil {
+			h.logger.Error("release reservation failed", "err", err)
+		}
+	}
 }
 
 // forward proxies the request to the upstream provider and reconciles cost afterwards.
@@ -135,8 +149,7 @@ func (h *Handler) forward(
 	r *http.Request,
 	bodyBytes []byte,
 	agentID string,
-	policies []*config.Policy,
-	estimatedCost float64,
+	reservations []budget.Reservation,
 ) {
 	upstreamBase, err := url.Parse(provider.UpstreamBase())
 	if err != nil {
@@ -160,10 +173,10 @@ func (h *Handler) forward(
 			req.Header.Del(AgentIDHeader)
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			if len(policies) == 0 {
+			if len(reservations) == 0 {
 				return nil
 			}
-			return h.reconcile(resp, provider, agentID, policies, estimatedCost)
+			return h.reconcile(resp, provider, agentID, reservations)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			h.logger.Error("upstream error", "err", err)
@@ -179,9 +192,15 @@ func (h *Handler) reconcile(
 	resp *http.Response,
 	provider providers.Provider,
 	agentID string,
-	policies []*config.Policy,
-	estimatedCost float64,
+	reservations []budget.Reservation,
 ) error {
+	// Streaming responses (SSE) carry no parseable usage block here and must not be
+	// buffered — doing so would defeat streaming. Leave the conservative estimate
+	// reserved and pass the stream through untouched.
+	if isStreaming(resp) {
+		return nil
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil
@@ -197,8 +216,8 @@ func (h *Handler) reconcile(
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, p := range policies {
-		if reconcileErr := h.tracker.Reconcile(ctx, agentID, provider.Name(), estimatedCost, actualCost, p.WindowDuration); reconcileErr != nil {
+	for _, res := range reservations {
+		if reconcileErr := h.tracker.Reconcile(ctx, res, actualCost); reconcileErr != nil {
 			h.logger.Error("reconcile failed", "err", reconcileErr)
 		}
 	}
@@ -206,20 +225,42 @@ func (h *Handler) reconcile(
 	h.logger.Info("request completed",
 		"agent", agentID,
 		"provider", provider.Name(),
-		"estimated_usd", fmt.Sprintf("%.6f", estimatedCost),
 		"actual_usd", fmt.Sprintf("%.6f", actualCost),
 	)
 	return nil
 }
 
-// matchingPolicies filters policies for the model in the request (if specified).
-func (h *Handler) matchingPolicies(policies []*config.Policy, r *http.Request) []*config.Policy {
-	// Read model from request — already buffered, safe to re-read header approach.
-	// We pass the raw body separately; use a quick JSON peek here.
-	// Since body is restored as NopCloser, we can't re-read it here without the bytes.
-	// Policies without Models always apply. Policies with Models are filtered by request model.
-	// For now, apply all policies (model filtering is advisory in v1).
-	return policies
+func isStreaming(resp *http.Response) bool {
+	return strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+}
+
+// matchingPolicies returns the policies that apply to the given request model.
+// A policy with no Models list applies to every model for its provider; a policy
+// that lists Models applies only when the request model is in that list.
+func matchingPolicies(policies []*config.Policy, model string) []*config.Policy {
+	out := make([]*config.Policy, 0, len(policies))
+	for _, p := range policies {
+		if len(p.Models) == 0 {
+			out = append(out, p)
+			continue
+		}
+		for _, m := range p.Models {
+			if m == model {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// modelFromBody extracts the "model" field from a JSON request body, if present.
+func modelFromBody(body []byte) string {
+	var req struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &req)
+	return req.Model
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, code int, msg string) {
