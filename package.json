@@ -1,7 +1,7 @@
 {
   "name": "forcecage-gateway",
   "version": "0.1.0",
-  "description": "ForceCage Gateway — inline financial proxy and policy firewall for AI agents",
+  "description": "ForceCage Gateway — a spending inline firewall for AI agents",
   "license": "BUSL-1.1",
   "devDependencies": {
     "@anthropic-ai/claude-code": "^2.1.195"

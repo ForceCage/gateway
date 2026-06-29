@@ -1,6 +1,6 @@
 # ForceCage Gateway
 
-ForceCage Gateway is an open-source, high-performance, inline financial proxy and policy firewall designed specifically for autonomous AI agent networks and distributed microservices.
+ForceCage Gateway is an open-source, high-performance **spending inline firewall** designed specifically for autonomous AI agent networks and distributed microservices.
 
 By sitting inline at your network boundary, ForceCage intercepts outgoing requests to metered API providers (like OpenAI and Anthropic), evaluates usage metrics against local policies in real time, and enforces hard programmatic spending limits before execution loops generate massive billing shocks.
 
