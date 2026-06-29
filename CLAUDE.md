@@ -35,6 +35,9 @@ Environment variables for local runs (all optional):
 | `POLICY_PATH` | `policy.yaml` |
 | `REDIS_URL` | `redis://localhost:6379` |
 | `LISTEN_ADDR` | `:8080` |
+| `FORWARD_PROXY_ADDR` | unset (forward-proxy ingress disabled) |
+| `FORWARD_CA_CERT` / `FORWARD_CA_KEY` | unset (self-generate a CA) |
+| `FORWARD_CA_OUT` | `forcecage-ca.pem` |
 
 ## Architecture
 
@@ -46,8 +49,8 @@ Enforcement must live **out-of-process at a chokepoint the workload cannot bypas
 
 | Mode | How the agent points at it | Dev friction | Bypass-proof | Status |
 |---|---|---|---|---|
-| **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | **Implemented** |
-| **Forward proxy** | `HTTPS_PROXY` + trusted CA, MITM the CONNECT tunnel | One env var, no code | Yes | Roadmap |
+| **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | **Implemented** (`handler.go`) |
+| **Forward proxy** | `HTTPS_PROXY` + trusted CA, MITM the CONNECT tunnel | One env var, no code | Yes | **Implemented** (`forward.go`, opt-in via `FORWARD_PROXY_ADDR`) |
 | **Sidecar / egress gateway** | Envoy `ext_authz`, service mesh, or NAT-forced egress | Zero (infra-enforced) | Yes, infra-level | Roadmap |
 | **In-process SDK shim** | `import` a package | Code change | **No** | Convenience only, not security |
 
@@ -81,9 +84,15 @@ internal/proxy/handler.go
 - `EstimateCost(r, body)` — parse request JSON, count input chars (÷3 for conservative token estimate), add `max_tokens` for output, multiply by pricing table.
 - `ExtractActualCost(resp, body)` — parse response JSON for actual `usage` counts, compute exact USD.
 
-To add a new provider: implement the `Provider` interface, add a pricing map, register in `NewRegistry()` in `provider.go`.
+To add a new provider: implement the `Provider` interface, add a pricing map, register in `NewRegistry()` in `provider.go`. `Registry.GetByHost()` resolves a provider from an upstream host (used by the forward proxy).
 
-**`internal/proxy`** — Single file (`handler.go`). The `ReverseProxy.Director` strips the `/proxy/{provider}` path prefix and rewrites the host. `ModifyResponse` runs the reconciliation. Redis errors fail open (request is forwarded) to avoid blocking legitimate traffic on transient Redis outages.
+**`internal/proxy`** — The shared enforcement core and the ingress adapters:
+- `engine.go` — transport-agnostic `Engine`. `Authorize()` does policy lookup, model matching, cost estimation, and atomic reserve-with-rollback (releasing earlier reservations if a later policy blocks), returning a `Decision`. `Reconcile()` parses the response and adjusts each reservation. Both ingresses call into this — enforcement logic lives here only.
+- `handler.go` — **reverse-proxy** ingress. Resolves provider from the `/proxy/{provider}` path prefix, delegates to `Engine`, forwards via `httputil.ReverseProxy`.
+- `forward.go` — **forward-proxy** ingress. Handles `CONNECT`, terminates TLS (MITM) for known provider hosts, runs the same `Engine`, and relays non-provider hosts untouched (blind tunnel). Opt-in via `FORWARD_PROXY_ADDR`.
+- `mitm.go` — `CertAuthority` mints/caches per-host leaf certs signed by a CA (loaded from `FORWARD_CA_CERT`/`FORWARD_CA_KEY`, or self-generated to `FORWARD_CA_OUT`).
+
+Redis errors fail open (request is forwarded) to avoid blocking legitimate traffic on transient Redis outages.
 
 ### Failure modes by design
 
