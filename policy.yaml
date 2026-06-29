@@ -1,0 +1,32 @@
+version: "1.0"
+
+# default_action applies to agents not listed below.
+# BLOCK refuses unknown agents. ALLOW passes them through without enforcement.
+default_action: BLOCK
+
+agents:
+  - id: "marketing-enrichment-agent"
+    policies:
+      - provider: "openai"
+        models: ["gpt-4o", "o1-pro"]
+        action: "BLOCK"
+        limit: 50.00
+        window: "1h"
+
+      - provider: "anthropic"
+        action: "BLOCK"
+        limit: 25.00
+        window: "24h"
+
+  - id: "data-pipeline-agent"
+    policies:
+      - provider: "openai"
+        action: "BLOCK"
+        limit: 10.00
+        window: "1h"
+
+      - provider: "anthropic"
+        models: ["claude-opus-4-8"]
+        action: "BLOCK"
+        limit: 100.00
+        window: "24h"
