@@ -15,29 +15,44 @@ By sitting inline at your network boundary, ForceCage intercepts outgoing reques
 
 ## Architecture
 
+ForceCage is a single **enforcement engine** fronted by **pluggable ingress adapters**. The engine — estimate cost, atomically reserve budget in Redis, enforce, forward, reconcile — never changes; only the way traffic is intercepted does. This keeps the firewall vendor- and language-agnostic and lets it meet your agents wherever their egress actually is.
+
 ```
-[Agent App]
-    │
-    │  POST /proxy/openai/v1/chat/completions
-    │  X-ForceCage-Agent-ID: my-agent
-    ▼
-[ForceCage Gateway]
-    │
-    ├─ O(1) policy lookup (in-memory map)
-    ├─ Pre-flight cost estimation
-    ├─ Atomic Redis check-and-reserve (Lua)  ──▶  [Redis]
-    │
-    │  (if budget OK)
-    ▼
-[OpenAI / Anthropic / ...]
-    │
-    ▼
-[ForceCage Gateway]  ◀── parse actual usage from response
-    │
-    ├─ Reconcile estimate → actual in Redis
-    ▼
-[Agent App]
+                  ┌──────────── pluggable ingress ────────────┐
+[Agent App] ──▶   │ reverse proxy · forward proxy · sidecar    │ ──▶ [ Enforcement Engine ]
+                  └────────────────────────────────────────────┘            │
+                                                                             ├─ O(1) policy lookup (in-memory map)
+                                                                             ├─ pre-flight cost estimation
+                                                                             ├─ atomic Redis check-and-reserve (Lua) ─▶ [Redis]
+                                                                             │
+                                                                  (if budget OK) ▼
+                                                                       [OpenAI / Anthropic / Bedrock / ...]
+                                                                             │
+                                                          parse actual usage ▼
+                                                                       reconcile estimate → actual in Redis ─▶ [Redis]
+                                                                             │
+                                                                             ▼
+                                                                        [Agent App]
 ```
+
+### Why a network chokepoint, not in-process middleware
+
+A financial firewall is only meaningful if the workload **cannot bypass it**. The code being caged is exactly the non-deterministic, possibly-compromised agent you don't fully trust — so enforcement runs *out-of-process* at a boundary it cannot route around. An in-process SDK wrapper is convenient for local dev but is trivially sidestepped (a prompt-injection or a stray HTTP client skips it) and can't share one budget counter across horizontally-scaled replicas. That shared, atomic Redis counter is the whole point — and it requires a network service.
+
+### Ingress modes
+
+| Mode | How the agent points at it | Friction | Bypass-proof | Status |
+|---|---|---|---|---|
+| **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | **Available now** |
+| **Forward proxy** | `HTTPS_PROXY` + trusted CA (MITM the TLS tunnel) | One env var, no code | Yes | Roadmap |
+| **Sidecar / egress gateway** | Envoy `ext_authz`, service mesh, NAT-forced egress | Zero (infra-enforced) | Yes, infra-level | Roadmap |
+| **In-process SDK shim** | `import` a package | Code change | No | Dev convenience only |
+
+The reverse-proxy mode (below) is the lowest-friction starting point — the official OpenAI and Anthropic SDKs all support a base-URL override, so integration is a single environment variable with no code changes.
+
+### Orchestration platforms (e.g. AWS Bedrock)
+
+On platforms where the agent does not own its egress and requests are signed (Bedrock's SigV4 `InvokeModel`), `base_url` redirection isn't enough. ForceCage integrates as a **forward-proxy / SigV4-aware** ingress instead: route the agent's subnet egress through ForceCage (Bedrock VPC PrivateLink endpoint), or terminate-and-re-sign requests, reading the `x-amzn-bedrock-*` usage headers for reconciliation. This complements AWS's own *reactive* tooling (CloudWatch/Budgets alarms, Provisioned Throughput) with the *real-time, pre-execution, cross-provider* drop those tools don't provide.
 
 ## Quickstart
 
@@ -47,7 +62,7 @@ cd gateway
 docker compose up -d
 ```
 
-Point your agent's SDK at the gateway instead of the provider directly:
+Point your agent's SDK at the gateway instead of the provider directly (reverse-proxy mode):
 
 ```bash
 # OpenAI SDK

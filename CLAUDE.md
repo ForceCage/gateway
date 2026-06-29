@@ -38,7 +38,20 @@ Environment variables for local runs (all optional):
 
 ## Architecture
 
-ForceCage is a **reverse proxy** that agents point their SDK base URL at (`OPENAI_BASE_URL=http://localhost:8080/proxy/openai`). It intercepts requests, enforces financial budgets, forwards to the real upstream, and reconciles actual cost afterwards.
+ForceCage is a **single enforcement engine behind pluggable ingress adapters**. The engine — parse the request, estimate cost, atomically check-and-reserve against Redis, enforce, forward, reconcile — is independent of *how* traffic reaches it. Today one ingress is implemented (reverse proxy); the others are roadmap, but the core (`internal/proxy`, `internal/budget`, `internal/providers`, `internal/config`) is deliberately ingress-agnostic so adding an adapter does not touch enforcement logic.
+
+Enforcement must live **out-of-process at a chokepoint the workload cannot bypass** — that is what makes ForceCage a firewall rather than an observability library. An in-process SDK shim is convenient but trivially bypassed (a prompt-injection or a stray HTTP client sidesteps it) and cannot share budget state across horizontally-scaled replicas, so it is only ever a dev-convenience layer, never the enforcement boundary.
+
+### Ingress modes (pluggable)
+
+| Mode | How the agent points at it | Dev friction | Bypass-proof | Status |
+|---|---|---|---|---|
+| **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | **Implemented** |
+| **Forward proxy** | `HTTPS_PROXY` + trusted CA, MITM the CONNECT tunnel | One env var, no code | Yes | Roadmap |
+| **Sidecar / egress gateway** | Envoy `ext_authz`, service mesh, or NAT-forced egress | Zero (infra-enforced) | Yes, infra-level | Roadmap |
+| **In-process SDK shim** | `import` a package | Code change | **No** | Convenience only, not security |
+
+All modes feed the same lifecycle below. Only the first three steps (how the request is received and which provider/agent it maps to) differ per adapter; steps 4–7 are shared engine code. AWS Bedrock is a forward-proxy/SigV4 case: the agent does not own the egress and requests are SigV4-signed, so it is enforced via VPC egress chokepoint (PrivateLink) or a re-signing proxy reading `x-amzn-bedrock-*` usage headers — not via `base_url`.
 
 ### Request lifecycle
 
