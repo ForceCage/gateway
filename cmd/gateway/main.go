@@ -75,6 +75,14 @@ func run(logger *slog.Logger) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// Optional forward-proxy ingress: set FORWARD_PROXY_ADDR (e.g. :8081) to let
+	// agents enforce via HTTPS_PROXY instead of a base_url override.
+	if fwdAddr := os.Getenv("FORWARD_PROXY_ADDR"); fwdAddr != "" {
+		if err := startForwardProxy(fwdAddr, idx, registry, tracker, logger); err != nil {
+			return fmt.Errorf("forward proxy: %w", err)
+		}
+	}
+
 	// Graceful shutdown.
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -93,6 +101,44 @@ func run(logger *slog.Logger) error {
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutCancel()
 	return srv.Shutdown(shutCtx)
+}
+
+// startForwardProxy boots the forward-proxy (MITM) ingress on its own listener.
+// The CA is loaded from FORWARD_CA_CERT/FORWARD_CA_KEY when provided; otherwise a
+// self-signed CA is generated and written to FORWARD_CA_OUT (default ./forcecage-ca.pem)
+// for installation into the agent's trust store.
+func startForwardProxy(addr string, idx *config.Index, registry *providers.Registry, tracker *budget.Tracker, logger *slog.Logger) error {
+	var ca *proxy.CertAuthority
+	certPath, keyPath := os.Getenv("FORWARD_CA_CERT"), os.Getenv("FORWARD_CA_KEY")
+	if certPath != "" && keyPath != "" {
+		loaded, err := proxy.LoadCertAuthority(certPath, keyPath)
+		if err != nil {
+			return err
+		}
+		ca = loaded
+		logger.Info("forward proxy CA loaded", "cert", certPath)
+	} else {
+		generated, certPEM, _, err := proxy.GenerateCertAuthority("ForceCage Forward Proxy CA")
+		if err != nil {
+			return err
+		}
+		ca = generated
+		out := envOr("FORWARD_CA_OUT", "forcecage-ca.pem")
+		if err := os.WriteFile(out, certPEM, 0o600); err != nil {
+			return err
+		}
+		logger.Warn("forward proxy generated an ephemeral CA; install it in the agent trust store", "ca_cert", out)
+	}
+
+	engine := proxy.NewEngine(idx, registry, tracker, logger)
+	fp := proxy.NewForwardProxy(engine, registry, ca, logger)
+	go func() {
+		logger.Info("forward proxy listening", "addr", addr)
+		if err := http.ListenAndServe(addr, fp); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("forward proxy error", "err", err)
+		}
+	}()
+	return nil
 }
 
 func envOr(key, fallback string) string {

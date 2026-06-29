@@ -1,19 +1,21 @@
-# ForceCage Gateway
+# 🛡️ ForceCage Gateway
 
-ForceCage Gateway is an open-source, high-performance **spending inline firewall** designed specifically for autonomous AI agent networks and distributed microservices.
+![ForceCage Gateway — the cost-governance proxy for AI agents](docs/banner.png)
 
-By sitting inline at your network boundary, ForceCage intercepts outgoing requests to metered API providers (like OpenAI and Anthropic), evaluates usage metrics against local policies in real time, and enforces hard programmatic spending limits before execution loops generate massive billing shocks.
+ForceCage Gateway is an open-source, high-performance **💸 spending inline firewall** designed specifically for autonomous AI agent networks and distributed microservices.
 
-## Features
+🧱 By sitting inline at your network boundary, ForceCage intercepts outgoing requests to metered API providers (like OpenAI and Anthropic), evaluates usage metrics against local policies in real time, and enforces hard programmatic spending limits before execution loops generate massive billing shocks. 🚫💥
 
-- **Redis-Backed Real-Time Enforcement:** Atomic, sub-millisecond budget tracking using a Lua check-and-reserve script — no race conditions, no double-spend.
-- **Dual-Phase Cost Control:** Conservative pre-flight estimation blocks over-budget requests before they hit the upstream. Post-execution reconciliation adjusts the running total to the exact billed amount.
-- **O(1) Policy Lookup:** Policies are parsed once at boot and indexed into nested hash maps — enforcement latency is flat regardless of how many agents or rules exist.
-- **Stateless Gateway:** All state lives in Redis. Scale horizontally behind any load balancer with zero coordination overhead.
-- **Static YAML Configuration:** Explicit, version-controlled definitions for agent budgets, spending windows, and model permissions.
-- **Frictionless Local Quickstart:** A single `docker compose up` spins up the gateway and a Redis instance side-by-side.
+## ✨ Features
 
-## Architecture
+- ⚡ **Redis-Backed Real-Time Enforcement:** Atomic, sub-millisecond budget tracking using a Lua check-and-reserve script — no race conditions, no double-spend.
+- 🎯 **Dual-Phase Cost Control:** Conservative pre-flight estimation blocks over-budget requests before they hit the upstream. Post-execution reconciliation adjusts the running total to the exact billed amount.
+- 🚀 **O(1) Policy Lookup:** Policies are parsed once at boot and indexed into nested hash maps — enforcement latency is flat regardless of how many agents or rules exist.
+- 📈 **Stateless Gateway:** All state lives in Redis. Scale horizontally behind any load balancer with zero coordination overhead.
+- 📝 **Static YAML Configuration:** Explicit, version-controlled definitions for agent budgets, spending windows, and model permissions.
+- 🐳 **Frictionless Local Quickstart:** A single `docker compose up` spins up the gateway and a Redis instance side-by-side.
+
+## 🏗️ Architecture
 
 ForceCage is a single **enforcement engine** fronted by **pluggable ingress adapters**. The engine — estimate cost, atomically reserve budget in Redis, enforce, forward, reconcile — never changes; only the way traffic is intercepted does. This keeps the firewall vendor- and language-agnostic and lets it meet your agents wherever their egress actually is.
 
@@ -43,18 +45,18 @@ A financial firewall is only meaningful if the workload **cannot bypass it**. Th
 
 | Mode | How the agent points at it | Friction | Bypass-proof | Status |
 |---|---|---|---|---|
-| **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | **Available now** |
-| **Forward proxy** | `HTTPS_PROXY` + trusted CA (MITM the TLS tunnel) | One env var, no code | Yes | Roadmap |
-| **Sidecar / egress gateway** | Envoy `ext_authz`, service mesh, NAT-forced egress | Zero (infra-enforced) | Yes, infra-level | Roadmap |
-| **In-process SDK shim** | `import` a package | Code change | No | Dev convenience only |
+| 🔁 **Reverse proxy** | SDK `base_url` → `/proxy/{provider}` | One env var | Yes | ✅ **Available now** |
+| ➡️ **Forward proxy** | `HTTPS_PROXY` + trusted CA (MITM the TLS tunnel) | One env var, no code | Yes | ✅ **Available now** |
+| 🧩 **Sidecar / egress gateway** | Envoy `ext_authz`, service mesh, NAT-forced egress | Zero (infra-enforced) | Yes, infra-level | 🚧 Roadmap |
+| 🪝 **In-process SDK shim** | `import` a package | Code change | No | ⚠️ Dev convenience only |
 
-The reverse-proxy mode (below) is the lowest-friction starting point — the official OpenAI and Anthropic SDKs all support a base-URL override, so integration is a single environment variable with no code changes.
+The reverse-proxy mode (below) is the lowest-friction starting point — the official OpenAI and Anthropic SDKs all support a base-URL override, so integration is a single environment variable with no code changes. For SDKs that can't override the base URL, the **forward-proxy mode** ([see below](#-forward-proxy-mode)) enforces the same policies with just `HTTPS_PROXY` + a trusted CA.
 
 ### Orchestration platforms (e.g. AWS Bedrock)
 
 On platforms where the agent does not own its egress and requests are signed (Bedrock's SigV4 `InvokeModel`), `base_url` redirection isn't enough. ForceCage integrates as a **forward-proxy / SigV4-aware** ingress instead: route the agent's subnet egress through ForceCage (Bedrock VPC PrivateLink endpoint), or terminate-and-re-sign requests, reading the `x-amzn-bedrock-*` usage headers for reconciliation. This complements AWS's own *reactive* tooling (CloudWatch/Budgets alarms, Provisioned Throughput) with the *real-time, pre-execution, cross-provider* drop those tools don't provide.
 
-## Quickstart
+## 🚀 Quickstart
 
 ```bash
 git clone https://github.com/ForceCage/gateway.git
@@ -78,7 +80,39 @@ Include the agent identity header on every request:
 X-ForceCage-Agent-ID: my-agent-id
 ```
 
-## Configuration
+## ➡️ Forward-proxy mode
+
+When an SDK can't override its base URL (or you want one un-bypassable egress point for *all* providers at once), run ForceCage as a **forward proxy**. The agent reaches it via `HTTPS_PROXY` and trusts its CA; ForceCage terminates the TLS tunnel (MITM), enforces the same policies on the decrypted request, forwards to the real upstream, and reconciles — **with no code changes in the agent**.
+
+Enable it by setting a listen address for the forward-proxy ingress:
+
+```bash
+FORWARD_PROXY_ADDR=:8081 ./gateway
+```
+
+On boot, if you don't supply your own CA, ForceCage generates one and writes the certificate to `forcecage-ca.pem`. Point your agent at the proxy and trust that CA:
+
+```bash
+export HTTPS_PROXY=http://localhost:8081
+export REQUESTS_CA_BUNDLE=$PWD/forcecage-ca.pem      # Python requests / OpenAI SDK
+export NODE_EXTRA_CA_CERTS=$PWD/forcecage-ca.pem     # Node SDKs
+export SSL_CERT_FILE=$PWD/forcecage-ca.pem           # Go and others
+```
+
+Requests to known metered hosts (e.g. `api.openai.com`, `api.anthropic.com`) are inspected and enforced; every other host is relayed through the tunnel untouched, so ForceCage is safe to use as the agent's only egress proxy. The same `X-ForceCage-Agent-ID` header identifies the agent.
+
+> ⚠️ The auto-generated CA is for development. In production, mount a CA you manage via `FORWARD_CA_CERT` / `FORWARD_CA_KEY` and distribute its certificate through your trust-store tooling.
+
+### Forward-proxy environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `FORWARD_PROXY_ADDR` | *(unset — disabled)* | Listen address for the forward-proxy ingress (e.g. `:8081`) |
+| `FORWARD_CA_CERT` | *(unset)* | Path to a PEM CA certificate to sign MITM leaf certs |
+| `FORWARD_CA_KEY` | *(unset)* | Path to the CA private key |
+| `FORWARD_CA_OUT` | `forcecage-ca.pem` | Where to write the generated CA cert when none is supplied |
+
+## ⚙️ Configuration
 
 Edit `policy.yaml` before starting the gateway. The file is hot-reload-safe on restart.
 
@@ -121,7 +155,7 @@ REDIS_URL=redis://my-cluster.abc123.cache.amazonaws.com:6379 ./gateway
 
 No image rebuild required. The gateway binary is completely stateless.
 
-## API
+## 🔌 API
 
 All requests to the gateway follow the pattern:
 
@@ -153,7 +187,7 @@ When a request would exceed a configured limit, the gateway returns `HTTP 429`:
 }
 ```
 
-## Supported Providers
+## 🧠 Supported Providers
 
 | Provider key | Upstream |
 |---|---|
@@ -162,13 +196,13 @@ When a request would exceed a configured limit, the gateway returns `HTTP 429`:
 
 Additional providers can be added by implementing the `Provider` interface in `/internal/providers/`. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Health Check
+## ❤️ Health Check
 
 ```bash
 curl http://localhost:8080/healthz
 # → ok
 ```
 
-## Security
+## 🔒 Security
 
 If you discover a security vulnerability within ForceCage Gateway, please do not open a public issue. Instead, email your disclosure report directly to security@forcecage.com.

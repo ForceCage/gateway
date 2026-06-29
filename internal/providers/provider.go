@@ -3,6 +3,8 @@ package providers
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 )
 
 // Provider encapsulates provider-specific cost estimation and upstream routing.
@@ -44,4 +46,24 @@ func (r *Registry) Get(name string) (Provider, error) {
 		return nil, fmt.Errorf("unknown provider %q", name)
 	}
 	return p, nil
+}
+
+// GetByHost returns the provider whose upstream host matches the given host
+// (e.g. "api.openai.com"). Used by the forward-proxy ingress, which identifies
+// the provider from the CONNECT target rather than a path prefix.
+func (r *Registry) GetByHost(host string) (Provider, error) {
+	// Strip any port suffix (host:443).
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	for _, p := range r.providers {
+		u, err := url.Parse(p.UpstreamBase())
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(u.Host, host) {
+			return p, nil
+		}
+	}
+	return nil, fmt.Errorf("no provider registered for host %q", host)
 }
